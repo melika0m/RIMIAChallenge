@@ -6,14 +6,14 @@ import cv2
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 import tensorflow as tf
-from tensorflow.keras.models import Sequential # type: ignore
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshape, BatchNormalization, Dropout, GlobalAveragePooling2D # type: ignore
-from tensorflow.keras.preprocessing.image import ImageDataGenerator # type: ignore
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler # type: ignore
-from tensorflow.keras.applications import ResNet50 # type: ignore
-from sklearn.model_selection import train_test_split, GridSearchCV
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, Reshape, GlobalAveragePooling2D
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.model_selection import train_test_split
 
-# Step 1: Load the Dataset
+# Step 1: Load and Preprocess Data (same as before)
 def load_data(train_dir):
     images = []
     labels = []
@@ -28,7 +28,6 @@ def load_data(train_dir):
     
     return np.array(images), np.array(labels)
 
-# Step 2: Preprocess Data
 def preprocess_data(images, labels):
     images = images / 255.0
     images = np.stack([images] * 3, axis=-1)  # Convert grayscale to 3-channel by stacking
@@ -47,11 +46,10 @@ def preprocess_data(images, labels):
     one_hot_labels = np.array([encode_label(label) for label in labels])
     return images, one_hot_labels
 
-# Step 3: Define the model function
-def build_model(learning_rate=0.001, dropout_rate=0.5, base_trainable=False):
-    base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
-    base_model.trainable = base_trainable  # Set base model to trainable or not
-
+# Step 2: Define the Model with EfficientNet
+def build_model(learning_rate=0.001, dropout_rate=0.5):
+    base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
+    
     model = Sequential([
         base_model,
         GlobalAveragePooling2D(),
@@ -67,44 +65,47 @@ def build_model(learning_rate=0.001, dropout_rate=0.5, base_trainable=False):
                   loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
-# Step 4: Manual Grid Search Implementation
-def manual_grid_search(X_train, y_train, X_val, y_val):
-    best_score = 0
-    best_params = None
-    param_grid = {
-        'learning_rate': [0.001, 0.0001],
-        'dropout_rate': [0.5, 0.3],
-        'batch_size': [32, 64],
-        'base_trainable': [False, True]
-    }
-    
-    for lr in param_grid['learning_rate']:
-        for dr in param_grid['dropout_rate']:
-            for bs in param_grid['batch_size']:
-                for bt in param_grid['base_trainable']:
-                    print(f"Testing model with lr={lr}, dropout_rate={dr}, batch_size={bs}, base_trainable={bt}")
-                    model = build_model(learning_rate=lr, dropout_rate=dr, base_trainable=bt)
-                    model.fit(X_train, y_train, epochs=10, batch_size=bs, validation_data=(X_val, y_val), verbose=0)
-                    score = model.evaluate(X_val, y_val, verbose=0)[1]  # Get accuracy
-                    print(f"Validation accuracy: {score}")
-                    if score > best_score:
-                        best_score = score
-                        best_params = {'learning_rate': lr, 'dropout_rate': dr, 'batch_size': bs, 'base_trainable': bt}
-    
-    print(f"Best score: {best_score}")
-    print(f"Best parameters: {best_params}")
-    
-    return best_params
+# Step 3: Learning Rate Scheduler with Cyclical Learning Rate
+def cyclical_learning_rate(step_size, min_lr, max_lr):
+    def clr_schedule(epoch):
+        cycle = np.floor(1 + epoch / (2 * step_size))
+        x = np.abs(epoch / step_size - 2 * cycle + 1)
+        lr = min_lr + (max_lr - min_lr) * np.maximum(0, (1 - x))
+        return lr
+    return clr_schedule
 
-# Step 5: Retrain the model with the best parameters
-def retrain_best_model(X_train, y_train, best_params):
-    model = build_model(learning_rate=best_params['learning_rate'], 
-                        dropout_rate=best_params['dropout_rate'], 
-                        base_trainable=best_params['base_trainable'])
-    model.fit(X_train, y_train, epochs=10, batch_size=best_params['batch_size'], validation_split=0.2)
-    return model
+# Step 4: Train the Model
+def train_model(model, X_train, y_train, X_val, y_val):
+    # Training data generator with augmentation
+    train_datagen = ImageDataGenerator(
+        rotation_range=10,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        shear_range=0.1,
+        zoom_range=0.1,
+        horizontal_flip=True
+    )
+    train_datagen.fit(X_train)
+    
+    # Validation data generator without augmentation
+    val_datagen = ImageDataGenerator()
+    
+    # Cyclical Learning Rate
+    clr = LearningRateScheduler(cyclical_learning_rate(step_size=10, min_lr=0.0001, max_lr=0.001))
+    
+    # Callbacks for learning rate scheduling and early stopping
+    lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, verbose=1, factor=0.5, min_lr=0.00001)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, verbose=1)
+    
+    # Fit the model
+    model.fit(train_datagen.flow(X_train, y_train, batch_size=32),
+              epochs=50,
+              validation_data=val_datagen.flow(X_val, y_val),
+              callbacks=[clr, lr_reduction, early_stopping])
+    
+    model.save('efficientnet_license_plate_model.h5')
 
-# Step 6: Make Predictions and Generate Submission
+# Step 5: Generate Submission (same as before)
 def generate_submission_corrected(model, test_dir, submission_file):
     submission_template = pd.read_csv('submission_template.csv')
     
@@ -120,19 +121,13 @@ def generate_submission_corrected(model, test_dir, submission_file):
         img_ids.append(filename.split(".")[0])
     
     test_images = np.array(test_images) / 255.0
-    
-    print(f"Number of test images: {len(test_images)}")  # Debugging line
-    
     predictions = model.predict(test_images)
-    
-    print(f"Shape of predictions: {predictions.shape}")  # Debugging line
     
     char_list = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     
     submission_rows = []
     
     for i, pred in enumerate(predictions):
-        print(f"Prediction shape before reshape: {pred.shape}")  # Debugging line
         pred = pred.reshape(8, 36)  # Reshape to (8, 36)
         for j, char_probs in enumerate(pred):
             pred_char = np.argmax(char_probs)
@@ -155,11 +150,9 @@ if __name__ == '__main__':
     # Split data into training and validation sets
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
     
-    # Perform manual grid search
-    best_params = manual_grid_search(X_train, y_train, X_val, y_val)
+    # Build and train the model
+    model = build_model()
+    train_model(model, X_train, y_train, X_val, y_val)
     
-    # Retrain the best model
-    best_model = retrain_best_model(X_train, y_train, best_params)
-    
-    # Generate submission with the best model
-    generate_submission_corrected(best_model, test_dir, 'enhanced_submission.csv')
+    # Generate submission
+    generate_submission_corrected(model, test_dir, 'enhanced_submission.csv')
