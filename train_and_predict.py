@@ -11,7 +11,7 @@ from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshap
 from tensorflow.keras.preprocessing.image import ImageDataGenerator # type: ignore
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler # type: ignore
 from tensorflow.keras.applications import ResNet50 # type: ignore
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 
 # Step 1: Load the Dataset
 def load_data(train_dir):
@@ -47,67 +47,62 @@ def preprocess_data(images, labels):
     one_hot_labels = np.array([encode_label(label) for label in labels])
     return images, one_hot_labels
 
-# Step 3: Build the Model using Transfer Learning
-def build_model():
+# Step 3: Define the model function
+def build_model(learning_rate=0.001, dropout_rate=0.5, base_trainable=False):
     base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
-    base_model.trainable = False  # Freeze the base model
+    base_model.trainable = base_trainable  # Set base model to trainable or not
 
     model = Sequential([
         base_model,
         GlobalAveragePooling2D(),
         Dense(256, activation='relu'),
-        Dropout(0.5),
+        Dropout(dropout_rate),
         Dense(128, activation='relu'),
-        Dropout(0.5),
+        Dropout(dropout_rate),
         Dense(8 * 36, activation='softmax'),
         Reshape((8, 36))
     ])
     
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+                  loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
-# Step 4: Learning Rate Scheduler
-def lr_schedule(epoch, lr):
-    if epoch > 30:
-        return lr * 0.1
-    elif epoch > 20:
-        return lr * 0.5
-    return lr
+# Step 4: Manual Grid Search Implementation
+def manual_grid_search(X_train, y_train, X_val, y_val):
+    best_score = 0
+    best_params = None
+    param_grid = {
+        'learning_rate': [0.001, 0.0001],
+        'dropout_rate': [0.5, 0.3],
+        'batch_size': [32, 64],
+        'base_trainable': [False, True]
+    }
+    
+    for lr in param_grid['learning_rate']:
+        for dr in param_grid['dropout_rate']:
+            for bs in param_grid['batch_size']:
+                for bt in param_grid['base_trainable']:
+                    print(f"Testing model with lr={lr}, dropout_rate={dr}, batch_size={bs}, base_trainable={bt}")
+                    model = build_model(learning_rate=lr, dropout_rate=dr, base_trainable=bt)
+                    model.fit(X_train, y_train, epochs=10, batch_size=bs, validation_data=(X_val, y_val), verbose=0)
+                    score = model.evaluate(X_val, y_val, verbose=0)[1]  # Get accuracy
+                    print(f"Validation accuracy: {score}")
+                    if score > best_score:
+                        best_score = score
+                        best_params = {'learning_rate': lr, 'dropout_rate': dr, 'batch_size': bs, 'base_trainable': bt}
+    
+    print(f"Best score: {best_score}")
+    print(f"Best parameters: {best_params}")
+    
+    return best_params
 
-lr_scheduler = LearningRateScheduler(lr_schedule)
-
-# Step 5: Train the Model
-def train_model(model, X_train, y_train, X_val, y_val):
-    # Training data generator with augmentation
-    train_datagen = ImageDataGenerator(
-        rotation_range=10,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.1,
-        horizontal_flip=True
-    )
-    train_datagen.fit(X_train)
-    
-    # Validation data generator without augmentation
-    val_datagen = ImageDataGenerator()
-    
-    # Creating iterators for training and validation
-    train_generator = train_datagen.flow(X_train, y_train, batch_size=32)
-    val_generator = val_datagen.flow(X_val, y_val, batch_size=32)
-    
-    # Callbacks for reducing learning rate and early stopping
-    lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, verbose=1, factor=0.5, min_lr=0.00001)
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, verbose=1)
-    
-    # Fit the model
-    model.fit(train_generator,
-              epochs=50,
-              validation_data=val_generator,
-              callbacks=[lr_scheduler, lr_reduction, early_stopping])
-    
-    # Save the model
-    model.save('enhanced_license_plate_model.h5')
+# Step 5: Retrain the model with the best parameters
+def retrain_best_model(X_train, y_train, best_params):
+    model = build_model(learning_rate=best_params['learning_rate'], 
+                        dropout_rate=best_params['dropout_rate'], 
+                        base_trainable=best_params['base_trainable'])
+    model.fit(X_train, y_train, epochs=10, batch_size=best_params['batch_size'], validation_split=0.2)
+    return model
 
 # Step 6: Make Predictions and Generate Submission
 def generate_submission_corrected(model, test_dir, submission_file):
@@ -150,19 +145,21 @@ def generate_submission_corrected(model, test_dir, submission_file):
     submission_df.to_csv(submission_file, index=False)
 
 if __name__ == '__main__':
+    # Load and preprocess data
     train_dir = 'data/train_data/final_train_set'
     test_dir = 'data/test_data/final_test_set'
     
-    # Load and preprocess data
     images, labels = load_data(train_dir)
     images, labels = preprocess_data(images, labels)
     
     # Split data into training and validation sets
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
     
-    # Build and train the model
-    model = build_model()
-    train_model(model, X_train, y_train, X_val, y_val)
+    # Perform manual grid search
+    best_params = manual_grid_search(X_train, y_train, X_val, y_val)
     
-    # Generate submission
-    generate_submission_corrected(model, test_dir, 'enhanced_submission.csv')
+    # Retrain the best model
+    best_model = retrain_best_model(X_train, y_train, best_params)
+    
+    # Generate submission with the best model
+    generate_submission_corrected(best_model, test_dir, 'enhanced_submission.csv')
