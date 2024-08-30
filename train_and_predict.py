@@ -6,11 +6,12 @@ import cv2
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 import tensorflow as tf
-from tensorflow.keras.models import Sequential # type: ignore
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshape, BatchNormalization, Dropout, GlobalAveragePooling2D # type: ignore
-from tensorflow.keras.preprocessing.image import ImageDataGenerator # type: ignore
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler # type: ignore
-from tensorflow.keras.applications import ResNet50 # type: ignore
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshape, BatchNormalization, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.optimizers import Adam
 from sklearn.model_selection import train_test_split
 
 # Step 1: Load the Dataset
@@ -65,14 +66,11 @@ def preprocess_data(images, labels):
     return images, one_hot_labels
 
 # Step 3: Build the Model using Transfer Learning
-from tensorflow.keras.optimizers import Adam
-
-# Step 3: Build the Model using Transfer Learning and Fine-Tuning
 def build_model():
     base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
     
-    # Unfreeze the top layers of ResNet50 for fine-tuning
-    for layer in base_model.layers[-30:]:  # Unfreezing the last 30 layers
+    # Unfreeze the top layers of ResNet50
+    for layer in base_model.layers[-10:]:
         layer.trainable = True
     
     model = Sequential([
@@ -86,26 +84,25 @@ def build_model():
         Reshape((8, 36))
     ])
     
-    # Use a lower learning rate for fine-tuning
-    fine_tune_lr = 1e-5
-    model.compile(optimizer=Adam(learning_rate=fine_tune_lr), loss='categorical_crossentropy', metrics=['accuracy'])
-    
+    # Use a smaller initial learning rate
+    initial_lr = 1e-4
+    model.compile(optimizer=Adam(learning_rate=initial_lr), loss='categorical_crossentropy', metrics=['accuracy'])
     return model
-
-
 
 # Step 4: Learning Rate Scheduler
 def lr_schedule(epoch, lr):
-    if epoch > 30:
-        return lr * 0.1
-    elif epoch > 20:
-        return lr * 0.5
-    return lr
+    if epoch < 10:
+        return lr  # Keep the initial learning rate for the first 10 epochs
+    elif epoch < 20:
+        return lr * 0.1  # Reduce the learning rate by a factor of 10
+    elif epoch < 30:
+        return lr * 0.01  # Reduce the learning rate further by a factor of 10
+    else:
+        return lr * 0.001  # Further reduce for fine-tuning at the end
 
 lr_scheduler = LearningRateScheduler(lr_schedule)
 
 # Step 5: Train the Model
-
 def train_model(model, X_train, y_train, X_val, y_val):
     # Enhanced training data generator with more augmentation
     train_datagen = ImageDataGenerator(
@@ -140,7 +137,6 @@ def train_model(model, X_train, y_train, X_val, y_val):
     
     # Save the model
     model.save('enhanced_license_plate_model.h5')
-
 
 # Step 6: Make Predictions and Generate Submission
 def generate_submission_corrected(model, test_dir, submission_file):
