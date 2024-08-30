@@ -53,7 +53,7 @@ def preprocess_data(images, labels):
 def build_model():
     base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
     
-    # Unfreeze the last few layers of ResNet50
+    # Unfreeze the last few layers of ResNet50 for fine-tuning
     for layer in base_model.layers[-10:]:
         layer.trainable = True
 
@@ -68,7 +68,7 @@ def build_model():
         Reshape((8, 36))
     ])
     
-    # Compile with AdamW optimizer
+    # Compile with AdamW optimizer and label smoothing
     model.compile(optimizer=AdamW(learning_rate=0.0001), 
                   loss=CategoricalCrossentropy(label_smoothing=0.1), 
                   metrics=['accuracy'])
@@ -86,7 +86,7 @@ lr_scheduler = LearningRateScheduler(lr_schedule)
 
 # Step 5: Train the Model
 def train_model(model, X_train, y_train, X_val, y_val):
-    # Training data generator with advanced augmentation (e.g., MixUp or CutMix)
+    # Training data generator with advanced augmentation (e.g., CutMix or MixUp)
     train_datagen = ImageDataGenerator(
         rotation_range=10,
         width_shift_range=0.1,
