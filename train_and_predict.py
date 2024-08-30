@@ -65,11 +65,14 @@ def preprocess_data(images, labels):
     return images, one_hot_labels
 
 # Step 3: Build the Model using Transfer Learning
+from tensorflow.keras.optimizers import Adam
+
+# Step 3: Build the Model using Transfer Learning and Fine-Tuning
 def build_model():
     base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
     
-    # Unfreeze the top layers of ResNet50
-    for layer in base_model.layers[-10:]:
+    # Unfreeze the top layers of ResNet50 for fine-tuning
+    for layer in base_model.layers[-30:]:  # Unfreezing the last 30 layers
         layer.trainable = True
     
     model = Sequential([
@@ -83,8 +86,12 @@ def build_model():
         Reshape((8, 36))
     ])
     
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    # Use a lower learning rate for fine-tuning
+    fine_tune_lr = 1e-5
+    model.compile(optimizer=Adam(learning_rate=fine_tune_lr), loss='categorical_crossentropy', metrics=['accuracy'])
+    
     return model
+
 
 
 # Step 4: Learning Rate Scheduler
