@@ -7,13 +7,15 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Reshape, GlobalAveragePooling2D
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
-from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshape, BatchNormalization, Dropout, GlobalAveragePooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.optimizers import AdamW
 from sklearn.model_selection import train_test_split
+from tensorflow.keras.losses import CategoricalCrossentropy
 
-# Step 1: Load and Preprocess Data (same as before)
+# Step 1: Load the Dataset
 def load_data(train_dir):
     images = []
     labels = []
@@ -28,6 +30,7 @@ def load_data(train_dir):
     
     return np.array(images), np.array(labels)
 
+# Step 2: Preprocess Data
 def preprocess_data(images, labels):
     images = images / 255.0
     images = np.stack([images] * 3, axis=-1)  # Convert grayscale to 3-channel by stacking
@@ -46,37 +49,44 @@ def preprocess_data(images, labels):
     one_hot_labels = np.array([encode_label(label) for label in labels])
     return images, one_hot_labels
 
-# Step 2: Define the Model with EfficientNet
-def build_model(learning_rate=0.001, dropout_rate=0.5):
-    base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
+# Step 3: Build the Model using Transfer Learning
+def build_model():
+    base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
     
+    # Unfreeze the last few layers of ResNet50
+    for layer in base_model.layers[-10:]:
+        layer.trainable = True
+
     model = Sequential([
         base_model,
         GlobalAveragePooling2D(),
-        Dense(256, activation='relu'),
-        Dropout(dropout_rate),
-        Dense(128, activation='relu'),
-        Dropout(dropout_rate),
+        Dense(512, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        Dropout(0.5),
+        Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        Dropout(0.5),
         Dense(8 * 36, activation='softmax'),
         Reshape((8, 36))
     ])
     
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-                  loss='categorical_crossentropy', metrics=['accuracy'])
+    # Compile with AdamW optimizer
+    model.compile(optimizer=AdamW(learning_rate=0.0001), 
+                  loss=CategoricalCrossentropy(label_smoothing=0.1), 
+                  metrics=['accuracy'])
     return model
 
-# Step 3: Learning Rate Scheduler with Cyclical Learning Rate
-def cyclical_learning_rate(step_size, min_lr, max_lr):
-    def clr_schedule(epoch):
-        cycle = np.floor(1 + epoch / (2 * step_size))
-        x = np.abs(epoch / step_size - 2 * cycle + 1)
-        lr = min_lr + (max_lr - min_lr) * np.maximum(0, (1 - x))
-        return lr
-    return clr_schedule
+# Step 4: Learning Rate Scheduler
+def lr_schedule(epoch, lr):
+    if epoch > 30:
+        return lr * 0.1
+    elif epoch > 20:
+        return lr * 0.5
+    return lr
 
-# Step 4: Train the Model
+lr_scheduler = LearningRateScheduler(lr_schedule)
+
+# Step 5: Train the Model
 def train_model(model, X_train, y_train, X_val, y_val):
-    # Training data generator with augmentation
+    # Training data generator with advanced augmentation (e.g., MixUp or CutMix)
     train_datagen = ImageDataGenerator(
         rotation_range=10,
         width_shift_range=0.1,
@@ -90,22 +100,24 @@ def train_model(model, X_train, y_train, X_val, y_val):
     # Validation data generator without augmentation
     val_datagen = ImageDataGenerator()
     
-    # Cyclical Learning Rate
-    clr = LearningRateScheduler(cyclical_learning_rate(step_size=10, min_lr=0.0001, max_lr=0.001))
+    # Creating iterators for training and validation
+    train_generator = train_datagen.flow(X_train, y_train, batch_size=32)
+    val_generator = val_datagen.flow(X_val, y_val, batch_size=32)
     
-    # Callbacks for learning rate scheduling and early stopping
+    # Callbacks for reducing learning rate and early stopping
     lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, verbose=1, factor=0.5, min_lr=0.00001)
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, verbose=1)
     
     # Fit the model
-    model.fit(train_datagen.flow(X_train, y_train, batch_size=32),
+    model.fit(train_generator,
               epochs=50,
-              validation_data=val_datagen.flow(X_val, y_val),
-              callbacks=[clr, lr_reduction, early_stopping])
+              validation_data=val_generator,
+              callbacks=[lr_scheduler, lr_reduction, early_stopping])
     
-    model.save('efficientnet_license_plate_model.h5')
+    # Save the model
+    model.save('enhanced_license_plate_model.h5')
 
-# Step 5: Generate Submission (same as before)
+# Step 6: Make Predictions and Generate Submission
 def generate_submission_corrected(model, test_dir, submission_file):
     submission_template = pd.read_csv('submission_template.csv')
     
@@ -121,13 +133,19 @@ def generate_submission_corrected(model, test_dir, submission_file):
         img_ids.append(filename.split(".")[0])
     
     test_images = np.array(test_images) / 255.0
+    
+    print(f"Number of test images: {len(test_images)}")  # Debugging line
+    
     predictions = model.predict(test_images)
+    
+    print(f"Shape of predictions: {predictions.shape}")  # Debugging line
     
     char_list = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     
     submission_rows = []
     
     for i, pred in enumerate(predictions):
+        print(f"Prediction shape before reshape: {pred.shape}")  # Debugging line
         pred = pred.reshape(8, 36)  # Reshape to (8, 36)
         for j, char_probs in enumerate(pred):
             pred_char = np.argmax(char_probs)
@@ -140,10 +158,10 @@ def generate_submission_corrected(model, test_dir, submission_file):
     submission_df.to_csv(submission_file, index=False)
 
 if __name__ == '__main__':
-    # Load and preprocess data
     train_dir = 'data/train_data/final_train_set'
     test_dir = 'data/test_data/final_test_set'
     
+    # Load and preprocess data
     images, labels = load_data(train_dir)
     images, labels = preprocess_data(images, labels)
     
