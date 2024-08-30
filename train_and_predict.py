@@ -14,17 +14,34 @@ from tensorflow.keras.applications import ResNet50 # type: ignore
 from sklearn.model_selection import train_test_split
 
 # Step 1: Load the Dataset
-def load_data(train_dir):
+def load_data(train_dir, labels_csv):
     images = []
     labels = []
     
+    # Load labels from CSV
+    label_df = pd.read_csv(labels_csv)
+    
+    # Create a dictionary for quick lookup
+    label_dict = {row['img_id']: row['plate_number'] for _, row in label_df.iterrows()}
+    
     for filename in os.listdir(train_dir):
+        img_id = filename.split(".")[0]
         img_path = os.path.join(train_dir, filename)
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        img = cv2.resize(img, (128, 128))
-        images.append(img)
-        label = filename.split(".")[0]
-        labels.append(label)
+        try:
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                print(f"Skipping corrupted image: {filename}")
+                continue
+            img = cv2.resize(img, (128, 128))
+            images.append(img)
+            label = label_dict.get(img_id, None)
+            if label is not None:
+                labels.append(label)
+            else:
+                print(f"No label found for {filename}, skipping this image.")
+        except Exception as e:
+            print(f"Error loading image {filename}: {e}")
+            continue
     
     return np.array(images), np.array(labels)
 
@@ -81,15 +98,19 @@ def lr_schedule(epoch, lr):
 lr_scheduler = LearningRateScheduler(lr_schedule)
 
 # Step 5: Train the Model
+
 def train_model(model, X_train, y_train, X_val, y_val):
-    # Training data generator with augmentation
+    # Enhanced training data generator with more augmentation
     train_datagen = ImageDataGenerator(
-        rotation_range=10,
+        rotation_range=15,  # Increased rotation for more variation
         width_shift_range=0.1,
         height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.1,
-        horizontal_flip=True
+        shear_range=0.15,  # Increased shear for more distortion
+        zoom_range=0.15,   # Increased zoom for better generalization
+        horizontal_flip=True,
+        brightness_range=[0.7, 1.3],  # Randomly adjust brightness
+        channel_shift_range=30.0,  # Randomly shift the color channels
+        fill_mode='nearest'  # Filling strategy for any new pixels created
     )
     train_datagen.fit(X_train)
     
@@ -112,6 +133,7 @@ def train_model(model, X_train, y_train, X_val, y_val):
     
     # Save the model
     model.save('enhanced_license_plate_model.h5')
+
 
 # Step 6: Make Predictions and Generate Submission
 def generate_submission_corrected(model, test_dir, submission_file):
@@ -156,9 +178,10 @@ def generate_submission_corrected(model, test_dir, submission_file):
 if __name__ == '__main__':
     train_dir = 'data/train_data/final_train_set'
     test_dir = 'data/test_data/final_test_set'
+    labels_csv = 'data/train_labels.csv' 
     
     # Load and preprocess data
-    images, labels = load_data(train_dir)
+    images, labels = load_data(train_dir, labels_csv)
     images, labels = preprocess_data(images, labels)
     
     # Split data into training and validation sets
