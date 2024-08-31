@@ -12,6 +12,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.losses import CategoricalCrossentropy
 from sklearn.model_selection import train_test_split
 
 # Step 1: Load the Dataset
@@ -65,7 +66,13 @@ def preprocess_data(images, labels):
     one_hot_labels = np.array([encode_label(label) for label in labels])
     return images, one_hot_labels
 
-# Step 3: Build the Model using Transfer Learning
+# Step 3: Custom Weighted Loss Function
+def custom_weighted_categorical_crossentropy(weights):
+    def loss(y_true, y_pred):
+        return tf.reduce_mean(tf.reduce_sum(-y_true * tf.math.log(y_pred) * weights, axis=-1))
+    return loss
+
+# Step 4: Build the Model using Transfer Learning
 def build_model():
     base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
     
@@ -84,25 +91,25 @@ def build_model():
         Reshape((8, 36))
     ])
     
-    # Use a smaller initial learning rate
-    initial_lr = 1e-4
-    model.compile(optimizer=Adam(learning_rate=initial_lr), loss='categorical_crossentropy', metrics=['accuracy'])
+    # Define class weights (example: more weight to less frequent characters)
+    weights = np.ones((36,))  # Default weights are 1 for all classes
+    # You can adjust specific weights here, e.g., weights[char_index] = some_value
+    
+    model.compile(optimizer='adam', loss=custom_weighted_categorical_crossentropy(weights), metrics=['accuracy'])
     return model
 
-# Step 4: Learning Rate Scheduler
+
+# Step 5: Learning Rate Scheduler
 def lr_schedule(epoch, lr):
-    if epoch < 10:
-        return lr  # Keep the initial learning rate for the first 10 epochs
-    elif epoch < 20:
-        return lr * 0.1  # Reduce the learning rate by a factor of 10
-    elif epoch < 30:
-        return lr * 0.01  # Reduce the learning rate further by a factor of 10
-    else:
-        return lr * 0.001  # Further reduce for fine-tuning at the end
+    if epoch > 30:
+        return lr * 0.1
+    elif epoch > 20:
+        return lr * 0.5
+    return lr
 
 lr_scheduler = LearningRateScheduler(lr_schedule)
 
-# Step 5: Train the Model
+# Step 6: Train the Model
 def train_model(model, X_train, y_train, X_val, y_val):
     # Enhanced training data generator with more augmentation
     train_datagen = ImageDataGenerator(
@@ -138,7 +145,7 @@ def train_model(model, X_train, y_train, X_val, y_val):
     # Save the model
     model.save('enhanced_license_plate_model.h5')
 
-# Step 6: Make Predictions and Generate Submission
+# Step 7: Make Predictions and Generate Submission
 def generate_submission_corrected(model, test_dir, submission_file):
     submission_template = pd.read_csv('submission_template.csv')
     
