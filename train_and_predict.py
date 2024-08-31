@@ -23,6 +23,8 @@ def load_data(train_dir, labels_csv):
     # Create a dictionary for quick lookup
     label_dict = {row['img_id']: row['plate_number'] for _, row in label_df.iterrows()}
     
+    missing_labels = 0
+    
     for filename in os.listdir(train_dir):
         img_id = filename.split(".")[0]
         img_path = os.path.join(train_dir, filename)
@@ -37,12 +39,15 @@ def load_data(train_dir, labels_csv):
             if label is not None:
                 labels.append(label)
             else:
+                missing_labels += 1
                 print(f"No label found for {filename}, skipping this image.")
         except Exception as e:
             print(f"Error loading image {filename}: {e}")
             continue
     
+    print(f"Total missing labels: {missing_labels}")
     return np.array(images), np.array(labels)
+
 
 # Step 2: Preprocess Data
 def preprocess_data(images, labels):
