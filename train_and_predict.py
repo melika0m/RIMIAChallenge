@@ -2,18 +2,15 @@ import os
 import numpy as np
 import pandas as pd
 import cv2
-
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
+from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Reshape, BatchNormalization, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D, Reshape
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
-from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications import ResNet50, InceptionV3, Xception
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.losses import CategoricalCrossentropy
-from sklearn.model_selection import train_test_split
 
 # Step 1: Load the Dataset
 def load_data(train_dir, labels_csv):
@@ -66,20 +63,8 @@ def preprocess_data(images, labels):
     one_hot_labels = np.array([encode_label(label) for label in labels])
     return images, one_hot_labels
 
-# Step 3: Custom Weighted Loss Function
-def custom_weighted_categorical_crossentropy(weights):
-    def loss(y_true, y_pred):
-        return tf.reduce_mean(tf.reduce_sum(-y_true * tf.math.log(y_pred) * weights, axis=-1))
-    return loss
-
-# Step 4: Build the Model using Transfer Learning
-def build_model():
-    base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
-    
-    # Unfreeze the top layers of ResNet50
-    for layer in base_model.layers[-10:]:
-        layer.trainable = True
-    
+# Step 3: Build and Train Multiple Models
+def build_model(base_model):
     model = Sequential([
         base_model,
         GlobalAveragePooling2D(),
@@ -93,13 +78,17 @@ def build_model():
     
     # Define class weights (example: more weight to less frequent characters)
     weights = np.ones((36,))  # Default weights are 1 for all classes
-    # You can adjust specific weights here, e.g., weights[char_index] = some_value
     
-    model.compile(optimizer='adam', loss=custom_weighted_categorical_crossentropy(weights), metrics=['accuracy'])
+    model.compile(optimizer=Adam(learning_rate=1e-4), loss=custom_weighted_categorical_crossentropy(weights), metrics=['accuracy'])
     return model
 
+# Custom Weighted Loss Function
+def custom_weighted_categorical_crossentropy(weights):
+    def loss(y_true, y_pred):
+        return tf.reduce_mean(tf.reduce_sum(-y_true * tf.math.log(y_pred) * weights, axis=-1))
+    return loss
 
-# Step 5: Learning Rate Scheduler
+# Learning Rate Scheduler
 def lr_schedule(epoch, lr):
     if epoch > 30:
         return lr * 0.1
@@ -109,7 +98,7 @@ def lr_schedule(epoch, lr):
 
 lr_scheduler = LearningRateScheduler(lr_schedule)
 
-# Step 6: Train the Model
+# Train the Model
 def train_model(model, X_train, y_train, X_val, y_val):
     # Enhanced training data generator with more augmentation
     train_datagen = ImageDataGenerator(
@@ -142,53 +131,35 @@ def train_model(model, X_train, y_train, X_val, y_val):
               validation_data=val_generator,
               callbacks=[lr_scheduler, lr_reduction, early_stopping])
     
-    # Save the model
-    model.save('enhanced_license_plate_model.h5')
+    return model
 
-# Step 7: Make Predictions and Generate Submission
-def generate_submission_corrected(model, test_dir, submission_file):
-    submission_template = pd.read_csv('submission_template.csv')
-    
-    test_images = []
-    img_ids = []
-    
-    for filename in os.listdir(test_dir):
-        img_path = os.path.join(test_dir, filename)
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        img = cv2.resize(img, (128, 128))
-        img = np.stack([img] * 3, axis=-1)  # Convert grayscale to 3-channel by stacking
-        test_images.append(img)
-        img_ids.append(filename.split(".")[0])
-    
-    test_images = np.array(test_images) / 255.0
-    
-    print(f"Number of test images: {len(test_images)}")  # Debugging line
-    
-    predictions = model.predict(test_images)
-    
-    print(f"Shape of predictions: {predictions.shape}")  # Debugging line
+# Step 4: Ensemble the Models
+def ensemble_predictions(models, X_test):
+    predictions = [model.predict(X_test) for model in models]
+    averaged_predictions = np.mean(predictions, axis=0)
+    return averaged_predictions
+
+# Make Predictions and Generate Submission
+def generate_submission_corrected(predictions, submission_file, template_path):
+    submission_template = pd.read_csv(template_path)
     
     char_list = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     
-    submission_rows = []
-    
     for i, pred in enumerate(predictions):
-        print(f"Prediction shape before reshape: {pred.shape}")  # Debugging line
         pred = pred.reshape(8, 36)  # Reshape to (8, 36)
         for j, char_probs in enumerate(pred):
             pred_char = np.argmax(char_probs)
-            one_hot_vector = [0] * 36
-            one_hot_vector[pred_char] = 1
-            submission_row = [f"{img_ids[i]}_{j + 1}"] + one_hot_vector
-            submission_rows.append(submission_row)
+            row_index = (i * 8) + j
+            submission_template.iloc[row_index, 1:] = 0  # Set all to 0
+            submission_template.iloc[row_index, 1 + pred_char] = 1  # Set the correct character to 1
     
-    submission_df = pd.DataFrame(submission_rows, columns=submission_template.columns)
-    submission_df.to_csv(submission_file, index=False)
+    submission_template.to_csv(submission_file, index=False)
 
 if __name__ == '__main__':
     train_dir = 'data/train_data/final_train_set'
     test_dir = 'data/test_data/final_test_set'
     labels_csv = 'data/train_labels.csv' 
+    template_path = 'data/submission_template.csv'
     
     # Load and preprocess data
     images, labels = load_data(train_dir, labels_csv)
@@ -197,9 +168,22 @@ if __name__ == '__main__':
     # Split data into training and validation sets
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
     
-    # Build and train the model
-    model = build_model()
-    train_model(model, X_train, y_train, X_val, y_val)
+    # Build and train multiple models
+    resnet_model = build_model(ResNet50(weights='imagenet', include_top=False, input_shape=(128, 128, 3)))
+    inception_model = build_model(InceptionV3(weights='imagenet', include_top=False, input_shape=(128, 128, 3)))
+    xception_model = build_model(Xception(weights='imagenet', include_top=False, input_shape=(128, 128, 3)))
+    
+    trained_resnet_model = train_model(resnet_model, X_train, y_train, X_val, y_val)
+    trained_inception_model = train_model(inception_model, X_train, y_train, X_val, y_val)
+    trained_xception_model = train_model(xception_model, X_train, y_train, X_val, y_val)
+    
+    # Load and preprocess test data
+    test_images, _ = load_data(test_dir, labels_csv)
+    test_images = test_images / 255.0
+    test_images = np.stack([test_images] * 3, axis=-1)
+    
+    # Ensemble the models
+    ensemble_preds = ensemble_predictions([trained_resnet_model, trained_inception_model, trained_xception_model], test_images)
     
     # Generate submission
-    generate_submission_corrected(model, test_dir, 'enhanced_submission.csv')
+    generate_submission_corrected(ensemble_preds, 'ensemble_submission.csv', template_path)
