@@ -23,8 +23,6 @@ def load_data(train_dir, labels_csv):
     # Create a dictionary for quick lookup
     label_dict = {row['img_id']: row['plate_number'] for _, row in label_df.iterrows()}
     
-    missing_labels = 0
-    
     for filename in os.listdir(train_dir):
         img_id = filename.split(".")[0]
         img_path = os.path.join(train_dir, filename)
@@ -39,15 +37,12 @@ def load_data(train_dir, labels_csv):
             if label is not None:
                 labels.append(label)
             else:
-                missing_labels += 1
                 print(f"No label found for {filename}, skipping this image.")
         except Exception as e:
             print(f"Error loading image {filename}: {e}")
             continue
     
-    print(f"Total missing labels: {missing_labels}")
     return np.array(images), np.array(labels)
-
 
 # Step 2: Preprocess Data
 def preprocess_data(images, labels):
@@ -107,20 +102,27 @@ lr_scheduler = LearningRateScheduler(lr_schedule)
 def train_model(model, X_train, y_train, X_val, y_val):
     # Enhanced training data generator with more augmentation
     train_datagen = ImageDataGenerator(
-        rotation_range=15,  # Increased rotation for more variation
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.15,  # Increased shear for more distortion
-        zoom_range=0.15,   # Increased zoom for better generalization
+        rotation_range=20,  # Increased rotation for more variation
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,  # Increased shear for more distortion
+        zoom_range=0.2,   # Increased zoom for better generalization
         horizontal_flip=True,
-        brightness_range=[0.7, 1.3],  # Randomly adjust brightness
-        channel_shift_range=30.0,  # Randomly shift the color channels
-        fill_mode='nearest'  # Filling strategy for any new pixels created
+        brightness_range=[0.6, 1.4],  # Randomly adjust brightness more extensively
+        channel_shift_range=40.0,  # Randomly shift the color channels more extensively
+        fill_mode='nearest',  # Filling strategy for any new pixels created
+        rescale=1./255  # Normalization
     )
-    train_datagen.fit(X_train)
     
-    # Validation data generator without augmentation
-    val_datagen = ImageDataGenerator()
+    val_datagen = ImageDataGenerator(
+        rescale=1./255,
+        brightness_range=[0.8, 1.2],
+        channel_shift_range=20.0,
+        fill_mode='nearest'
+    )
+    
+    # Fit the data generator to your training data
+    train_datagen.fit(X_train)
     
     # Creating iterators for training and validation
     train_generator = train_datagen.flow(X_train, y_train, batch_size=32)
